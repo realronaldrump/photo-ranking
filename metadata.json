@@ -1,0 +1,5 @@
+{
+  "name": "Portfolio Ranker",
+  "description": "A Bradley-Terry based ranking system to determine your best photography work via head-to-head comparisons.",
+  "requestFramePermissions": []
+}
