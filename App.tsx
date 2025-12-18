@@ -11,11 +11,20 @@ import { calculateRankings } from './services/rankingEngine';
 function App() {
   const [appState, setAppState] = useState<AppState>(AppState.SETUP);
   const [photos, setPhotos] = useState<RankedPhoto[]>([]);
-  const [matchHistory, setMatchHistory] = useState<MatchResult[]>([]);
+  const [matchHistory, setMatchHistory] = useState<MatchResult[]>(() => {
+    // Load history from local storage on initialization
+    const saved = localStorage.getItem('portfolio_ranker_history');
+    return saved ? JSON.parse(saved) : [];
+  });
   
   // Loading & Error states
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Persistence: Save history whenever it changes
+  useEffect(() => {
+    localStorage.setItem('portfolio_ranker_history', JSON.stringify(matchHistory));
+  }, [matchHistory]);
 
   // Initialize ranked photos whenever match history or base photo list changes
   useEffect(() => {
@@ -32,8 +41,10 @@ function App() {
       
       const newRankings = calculateRankings(basePhotos, matchHistory);
       
-      // Only update if there is a meaningful change to avoid loops.
-      // Since calculateRankings is deterministic, this is safe in this context.
+      // Only update if the reference changes to avoid loops (though calculateRankings creates new ref)
+      // We rely on React to only re-render if data is actually different or if specific deep compare needed
+      // For now, this is efficient enough for < 1000 items.
+      setPhotos(newRankings);
     }
   }, [matchHistory.length]);
 
@@ -55,8 +66,9 @@ function App() {
         rawPhotos = getDemoPhotos();
       }
 
-      // Initial Ranking Setup (0 matches)
-      const initialRanked = calculateRankings(rawPhotos, []);
+      // Initial Ranking Setup using EXISTING history
+      // This allows the "Brain" to pick up where it left off
+      const initialRanked = calculateRankings(rawPhotos, matchHistory);
       setPhotos(initialRanked);
       setAppState(AppState.BATTLE);
     } catch (err) {
@@ -80,11 +92,7 @@ function App() {
     // Update history
     const newHistory = [...matchHistory, newMatch];
     setMatchHistory(newHistory);
-    
-    // Recalculate rankings immediately for smooth UI
-    const basePhotos = photos.map(p => ({ id: p.id, url: p.url, title: p.title, width: p.width, height: p.height }));
-    const updatedRankings = calculateRankings(basePhotos, newHistory);
-    setPhotos(updatedRankings);
+    // Rankings update via useEffect
   };
 
   const renderContent = () => {

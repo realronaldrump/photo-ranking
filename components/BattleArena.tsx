@@ -7,9 +7,32 @@ interface BattleArenaProps {
   matchesCount: number;
 }
 
+interface BattleContext {
+  label: string;
+  description: string;
+  color: string;
+}
+
 const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount }) => {
   const [currentPair, setCurrentPair] = useState<[RankedPhoto, RankedPhoto] | null>(null);
+  const [battleContext, setBattleContext] = useState<BattleContext | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
+
+  // Keyboard Support
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!currentPair || isTransitioning) return;
+      
+      if (e.key === 'ArrowLeft') {
+        handleChoice(currentPair[0], currentPair[1]);
+      } else if (e.key === 'ArrowRight') {
+        handleChoice(currentPair[1], currentPair[0]);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentPair, isTransitioning]); // handleChoice is stable via wrapper below if needed, but here we call internal logic
 
   const selectNextPair = useCallback(() => {
     if (photos.length < 2) return;
@@ -17,32 +40,40 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
 
     let photoA: RankedPhoto;
     let photoB: RankedPhoto;
+    let context: BattleContext;
 
     const r = Math.random();
 
     // 1. PLACEMENT PHASE (Gatekeeper Strategy)
-    // Find a photo with 0 matches. Pair it against an "Anchor" (Average rating, high confidence).
+    // Find a photo with 0 matches. Pair it against an "Anchor".
+    // Updated: Anchor must be STABLE (Matches >= 10, not just 3).
     const unratedPhotos = validPhotos.filter(p => p.matches === 0);
     
     // 10% chance to skip placement to keep the rest of the pool churning
     if (unratedPhotos.length > 0 && r > 0.1) {
         const candidate = unratedPhotos[Math.floor(Math.random() * unratedPhotos.length)];
         
-        // Find an Anchor: Rating ~1000, Matches > 3
-        const anchors = validPhotos.filter(p => p.matches > 3 && Math.abs(p.rating - 1000) < 150);
+        // Find an Anchor: Rating ~1000, Matches >= 10
+        const anchors = validPhotos.filter(p => p.matches >= 10 && Math.abs(p.rating - 1000) < 150);
         
-        // If we have anchors, pick one. If not, pick a random established photo.
+        // If we have anchors, pick one. If not, pick a random established photo (fallback for early game).
         let opponent = anchors.length > 0 
             ? anchors[Math.floor(Math.random() * anchors.length)] 
-            : validPhotos.filter(p => p.id !== candidate.id)[Math.floor(Math.random() * (validPhotos.length - 1))];
+            : validPhotos.filter(p => p.id !== candidate.id && p.matches > 0)[Math.floor(Math.random() * (validPhotos.length - 1))];
 
+        // Absolute fallback if no matches exist yet
         if (!opponent) opponent = validPhotos.find(p => p.id !== candidate.id)!;
         
         photoA = candidate;
         photoB = opponent;
+        context = {
+          label: 'CLASSIFYING NEW ASSET',
+          description: 'Determining initial baseline against established anchors.',
+          color: 'text-blue-400'
+        };
     } 
     // 2. EXPLORATION PHASE (10% Chance)
-    // Pure random to prevent local optimization bubbles and ensure variety.
+    // Pure random to prevent local optimization bubbles.
     else if (r < 0.1) {
         const idxA = Math.floor(Math.random() * validPhotos.length);
         let idxB = Math.floor(Math.random() * validPhotos.length);
@@ -50,15 +81,18 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
         
         photoA = validPhotos[idxA];
         photoB = validPhotos[idxB];
+        context = {
+          label: 'EXPLORATION MODE',
+          description: 'Randomized pairing to ensure global optimization.',
+          color: 'text-purple-400'
+        };
     }
     // 3. REFINEMENT PHASE (Quality Matchmaking) - The "Smart" Default
-    // Pick the photo we are MOST uncertain about.
-    // Pair it against the photo with the CLOSEST rating (50/50 win probability).
     else {
         // Sort by uncertainty descending (High sigma first)
         const uncertainPhotos = [...validPhotos].sort((a, b) => b.uncertainty - a.uncertainty);
         
-        // Add a little randomness to the top 5 most uncertain to avoid stuck loops
+        // Pick one of the most uncertain photos
         const topCandidates = uncertainPhotos.slice(0, 5);
         photoA = topCandidates[Math.floor(Math.random() * topCandidates.length)];
 
@@ -77,14 +111,37 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
         }
 
         photoB = bestMatch || validPhotos.find(p => p.id !== photoA.id)!;
+        
+        // Context Labeling
+        if (photoA.uncertainty > 150 || photoB.uncertainty > 150) {
+           // High uncertainty often implies volatility/upsets
+           context = {
+             label: 'VERIFYING VOLATILITY',
+             description: 'One or both assets have inconsistent voting records.',
+             color: 'text-orange-400'
+           };
+        } else if (Math.abs(photoA.rating - photoB.rating) < 20) {
+           context = {
+             label: 'QUALITY TIE-BREAKER',
+             description: 'Assets are statistically equivalent. Choose carefully.',
+             color: 'text-green-400'
+           };
+        } else {
+           context = {
+             label: 'REFINEMENT',
+             description: 'Fine-tuning placement on the leaderboard.',
+             color: 'text-zinc-400'
+           };
+        }
     }
 
-    // Randomize A/B positions so Left/Right bias doesn't affect specific photos
+    // Randomize A/B positions
     if (Math.random() > 0.5) {
         setCurrentPair([photoA, photoB]);
     } else {
         setCurrentPair([photoB, photoA]);
     }
+    setBattleContext(context);
 
   }, [photos]);
 
@@ -118,12 +175,24 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
     <div className="flex flex-col flex-1 h-full w-full max-w-[1920px] mx-auto overflow-hidden">
       {/* Top Info Bar */}
       <div className="border-b border-zinc-800 bg-[#09090b] px-6 py-4 flex justify-between items-center shrink-0">
-        <span className="text-zinc-500 text-xs font-mono tracking-wide">
-          SELECT PREFERRED IMAGE
-        </span>
-        <div className="flex items-center space-x-3">
-           <span className="text-zinc-600 text-xs uppercase tracking-widest">Session Count</span>
-           <span className="text-white font-mono text-sm">{matchesCount.toString().padStart(3, '0')}</span>
+        <div className="flex flex-col">
+            <span className={`text-[10px] font-bold tracking-widest uppercase ${battleContext?.color || 'text-zinc-500'}`}>
+               {battleContext?.label || 'BATTLE ARENA'}
+            </span>
+            <span className="text-zinc-600 text-[10px] hidden md:inline-block">
+                {battleContext?.description}
+            </span>
+        </div>
+        <div className="flex items-center space-x-6">
+           <div className="hidden md:flex items-center space-x-2 text-[10px] text-zinc-600 font-mono border border-zinc-800 px-2 py-1 rounded">
+              <span>USE ARROW KEYS</span>
+              <span className="border border-zinc-700 px-1 rounded text-zinc-400">←</span>
+              <span className="border border-zinc-700 px-1 rounded text-zinc-400">→</span>
+           </div>
+           <div className="flex items-center space-x-3">
+               <span className="text-zinc-600 text-xs uppercase tracking-widest">Session Count</span>
+               <span className="text-white font-mono text-sm">{matchesCount.toString().padStart(3, '0')}</span>
+           </div>
         </div>
       </div>
 
@@ -149,8 +218,9 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
             <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/10 pointer-events-none transition-colors duration-300 m-4"></div>
             
             {/* Label */}
-            <div className="absolute bottom-6 left-6 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+            <div className="absolute bottom-6 left-6 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center space-x-2">
                 <span className="bg-white text-black text-[10px] font-bold px-2 py-1 uppercase tracking-widest">Select A</span>
+                <span className="bg-zinc-800 text-zinc-400 text-[10px] font-mono px-1.5 py-1 rounded border border-zinc-700">←</span>
             </div>
         </div>
 
@@ -174,7 +244,8 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
             <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/10 pointer-events-none transition-colors duration-300 m-4"></div>
 
             {/* Label */}
-            <div className="absolute bottom-6 right-6 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+            <div className="absolute bottom-6 right-6 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center space-x-2">
+                <span className="bg-zinc-800 text-zinc-400 text-[10px] font-mono px-1.5 py-1 rounded border border-zinc-700">→</span>
                 <span className="bg-white text-black text-[10px] font-bold px-2 py-1 uppercase tracking-widest">Select B</span>
             </div>
         </div>
