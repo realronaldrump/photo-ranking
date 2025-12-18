@@ -4,6 +4,7 @@ import { RankedPhoto } from '../types';
 interface BattleArenaProps {
   photos: RankedPhoto[];
   onVote: (winnerId: string, loserId: string) => void;
+  onUndo: () => void;
   matchesCount: number;
 }
 
@@ -13,14 +14,23 @@ interface BattleContext {
   color: string;
 }
 
-const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount }) => {
+const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, onUndo, matchesCount }) => {
   const [currentPair, setCurrentPair] = useState<[RankedPhoto, RankedPhoto] | null>(null);
   const [battleContext, setBattleContext] = useState<BattleContext | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
 
-  // Keyboard Support
+  // Keyboard Support & Undo
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Undo Listener (Ctrl+Z or Cmd+Z)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        onUndo();
+        // Optional: Provide visual feedback for undo? 
+        // For now, the match count decreasing is sufficient.
+        return;
+      }
+
       if (!currentPair || isTransitioning) return;
       
       if (e.key === 'ArrowLeft') {
@@ -32,7 +42,7 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentPair, isTransitioning]); // handleChoice is stable via wrapper below if needed, but here we call internal logic
+  }, [currentPair, isTransitioning, onUndo]);
 
   const selectNextPair = useCallback(() => {
     if (photos.length < 2) return;
@@ -45,23 +55,19 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
     const r = Math.random();
 
     // 1. PLACEMENT PHASE (Gatekeeper Strategy)
-    // Find a photo with 0 matches. Pair it against an "Anchor".
-    // Updated: Anchor must be STABLE (Matches >= 10, not just 3).
     const unratedPhotos = validPhotos.filter(p => p.matches === 0);
     
-    // 10% chance to skip placement to keep the rest of the pool churning
     if (unratedPhotos.length > 0 && r > 0.1) {
         const candidate = unratedPhotos[Math.floor(Math.random() * unratedPhotos.length)];
         
         // Find an Anchor: Rating ~1000, Matches >= 10
         const anchors = validPhotos.filter(p => p.matches >= 10 && Math.abs(p.rating - 1000) < 150);
         
-        // If we have anchors, pick one. If not, pick a random established photo (fallback for early game).
+        // If we have anchors, pick one. If not, pick a random established photo.
         let opponent = anchors.length > 0 
             ? anchors[Math.floor(Math.random() * anchors.length)] 
             : validPhotos.filter(p => p.id !== candidate.id && p.matches > 0)[Math.floor(Math.random() * (validPhotos.length - 1))];
 
-        // Absolute fallback if no matches exist yet
         if (!opponent) opponent = validPhotos.find(p => p.id !== candidate.id)!;
         
         photoA = candidate;
@@ -73,7 +79,6 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
         };
     } 
     // 2. EXPLORATION PHASE (10% Chance)
-    // Pure random to prevent local optimization bubbles.
     else if (r < 0.1) {
         const idxA = Math.floor(Math.random() * validPhotos.length);
         let idxB = Math.floor(Math.random() * validPhotos.length);
@@ -87,20 +92,17 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
           color: 'text-purple-400'
         };
     }
-    // 3. REFINEMENT PHASE (Quality Matchmaking) - The "Smart" Default
+    // 3. REFINEMENT PHASE (Quality Matchmaking)
     else {
-        // Sort by uncertainty descending (High sigma first)
+        // Sort by uncertainty descending
         const uncertainPhotos = [...validPhotos].sort((a, b) => b.uncertainty - a.uncertainty);
         
-        // Pick one of the most uncertain photos
         const topCandidates = uncertainPhotos.slice(0, 5);
         photoA = topCandidates[Math.floor(Math.random() * topCandidates.length)];
 
-        // Find the closest rating match
         let bestMatch: RankedPhoto | null = null;
         let minDiff = Infinity;
 
-        // Scan for closest rating
         for (const p of validPhotos) {
             if (p.id === photoA.id) continue;
             const diff = Math.abs(p.rating - photoA.rating);
@@ -112,9 +114,7 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
 
         photoB = bestMatch || validPhotos.find(p => p.id !== photoA.id)!;
         
-        // Context Labeling
         if (photoA.uncertainty > 150 || photoB.uncertainty > 150) {
-           // High uncertainty often implies volatility/upsets
            context = {
              label: 'VERIFYING VOLATILITY',
              description: 'One or both assets have inconsistent voting records.',
@@ -135,7 +135,6 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
         }
     }
 
-    // Randomize A/B positions
     if (Math.random() > 0.5) {
         setCurrentPair([photoA, photoB]);
     } else {
@@ -175,7 +174,8 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
     <div className="flex flex-col flex-1 h-full w-full max-w-[1920px] mx-auto overflow-hidden">
       {/* Top Info Bar */}
       <div className="border-b border-zinc-800 bg-[#09090b] px-6 py-4 flex justify-between items-center shrink-0">
-        <div className="flex flex-col">
+        {/* Fixed min-height to prevent context thrashing/layout jumps */}
+        <div className="flex flex-col justify-center min-h-[32px]">
             <span className={`text-[10px] font-bold tracking-widest uppercase ${battleContext?.color || 'text-zinc-500'}`}>
                {battleContext?.label || 'BATTLE ARENA'}
             </span>
@@ -188,6 +188,8 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
               <span>USE ARROW KEYS</span>
               <span className="border border-zinc-700 px-1 rounded text-zinc-400">←</span>
               <span className="border border-zinc-700 px-1 rounded text-zinc-400">→</span>
+              <span className="ml-2 text-zinc-700">|</span>
+              <span className="ml-2">UNDO: CTRL+Z</span>
            </div>
            <div className="flex items-center space-x-3">
                <span className="text-zinc-600 text-xs uppercase tracking-widest">Session Count</span>

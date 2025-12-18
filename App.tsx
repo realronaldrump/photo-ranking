@@ -10,7 +10,11 @@ import { calculateRankings } from './services/rankingEngine';
 
 function App() {
   const [appState, setAppState] = useState<AppState>(AppState.SETUP);
-  const [photos, setPhotos] = useState<RankedPhoto[]>([]);
+  
+  // ARCHITECTURE UPDATE: Separated Source of Truth (rawPhotos) from Derived View (rankedPhotos)
+  const [rawPhotos, setRawPhotos] = useState<Photo[]>([]);
+  const [rankedPhotos, setRankedPhotos] = useState<RankedPhoto[]>([]);
+  
   const [matchHistory, setMatchHistory] = useState<MatchResult[]>(() => {
     // Load history from local storage on initialization
     const saved = localStorage.getItem('portfolio_ranker_history');
@@ -26,50 +30,36 @@ function App() {
     localStorage.setItem('portfolio_ranker_history', JSON.stringify(matchHistory));
   }, [matchHistory]);
 
-  // Initialize ranked photos whenever match history or base photo list changes
+  // REACTIVE RANKING ENGINE
+  // Whenever history changes or we get new raw photos, re-calculate the rankings.
+  // This replaces the old circular logic and ensures one-way data flow.
   useEffect(() => {
-    if (photos.length > 0) {
-      // Create a base list of photos (strip ranking info to avoid double counting if we re-run)
-      // We map the base info then re-calculate.
-      const basePhotos: Photo[] = photos.map(p => ({
-        id: p.id,
-        url: p.url,
-        title: p.title,
-        width: p.width,
-        height: p.height
-      }));
-      
-      const newRankings = calculateRankings(basePhotos, matchHistory);
-      
-      // Only update if the reference changes to avoid loops (though calculateRankings creates new ref)
-      // We rely on React to only re-render if data is actually different or if specific deep compare needed
-      // For now, this is efficient enough for < 1000 items.
-      setPhotos(newRankings);
+    if (rawPhotos.length > 0) {
+      const newRankings = calculateRankings(rawPhotos, matchHistory);
+      setRankedPhotos(newRankings);
     }
-  }, [matchHistory.length]);
+  }, [matchHistory, rawPhotos]);
 
   const handleStart = async (config: FlickrConfig | null, albumId?: string) => {
     setIsLoading(true);
     setError(null);
     try {
-      let rawPhotos: Photo[];
+      let fetchedPhotos: Photo[];
       if (config) {
         // Fetch ALL photos (paginated) from the selected source
-        rawPhotos = await fetchPhotos(config.apiKey, config.userId, albumId);
+        fetchedPhotos = await fetchPhotos(config.apiKey, config.userId, albumId);
         
-        if (rawPhotos.length < 2) {
+        if (fetchedPhotos.length < 2) {
            throw new Error("Found fewer than 2 photos in this source. Ranking requires at least 2 images.");
         }
       } else {
         // Demo mode
         await new Promise(r => setTimeout(r, 1000));
-        rawPhotos = getDemoPhotos();
+        fetchedPhotos = getDemoPhotos();
       }
 
-      // Initial Ranking Setup using EXISTING history
-      // This allows the "Brain" to pick up where it left off
-      const initialRanked = calculateRankings(rawPhotos, matchHistory);
-      setPhotos(initialRanked);
+      setRawPhotos(fetchedPhotos);
+      // Note: The useEffect above will handle the initial ranking calculation
       setAppState(AppState.BATTLE);
     } catch (err) {
         if (err instanceof Error) {
@@ -89,10 +79,16 @@ function App() {
       timestamp: Date.now()
     };
     
-    // Update history
-    const newHistory = [...matchHistory, newMatch];
-    setMatchHistory(newHistory);
-    // Rankings update via useEffect
+    // Update history - this triggers the ranking useEffect
+    setMatchHistory(prev => [...prev, newMatch]);
+  };
+
+  // UNDO FUNCTIONALITY
+  // Removes the last vote from the history stack
+  const handleUndo = () => {
+    if (matchHistory.length > 0) {
+      setMatchHistory(prev => prev.slice(0, -1));
+    }
   };
 
   const renderContent = () => {
@@ -100,9 +96,16 @@ function App() {
       case AppState.SETUP:
         return <Setup onStart={handleStart} isLoading={isLoading} error={error} />;
       case AppState.BATTLE:
-        return <BattleArena photos={photos} onVote={handleVote} matchesCount={matchHistory.length} />;
+        return (
+          <BattleArena 
+            photos={rankedPhotos} 
+            onVote={handleVote} 
+            onUndo={handleUndo}
+            matchesCount={matchHistory.length} 
+          />
+        );
       case AppState.LEADERBOARD:
-        return <Leaderboard photos={photos} />;
+        return <Leaderboard photos={rankedPhotos} />;
       default:
         return null;
     }
