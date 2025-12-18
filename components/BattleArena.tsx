@@ -14,25 +14,78 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
   const selectNextPair = useCallback(() => {
     if (photos.length < 2) return;
     const validPhotos = photos.filter(p => !!p);
-    const candidates = [...validPhotos].sort((a, b) => (a.matches + Math.random()) - (b.matches + Math.random()));
 
-    let a = candidates[0];
-    let b = candidates[1];
+    let photoA: RankedPhoto;
+    let photoB: RankedPhoto;
 
-    if (a.id === b.id && candidates.length > 2) {
-      b = candidates[2];
-    }
+    const r = Math.random();
+
+    // 1. PLACEMENT PHASE (Gatekeeper Strategy)
+    // Find a photo with 0 matches. Pair it against an "Anchor" (Average rating, high confidence).
+    const unratedPhotos = validPhotos.filter(p => p.matches === 0);
     
-    // Weighted random injection
-    if (Math.random() > 0.7) {
-        const r1 = Math.floor(Math.random() * validPhotos.length);
-        let r2 = Math.floor(Math.random() * validPhotos.length);
-        while(r1 === r2) r2 = Math.floor(Math.random() * validPhotos.length);
-        a = validPhotos[r1];
-        b = validPhotos[r2];
+    // 10% chance to skip placement to keep the rest of the pool churning
+    if (unratedPhotos.length > 0 && r > 0.1) {
+        const candidate = unratedPhotos[Math.floor(Math.random() * unratedPhotos.length)];
+        
+        // Find an Anchor: Rating ~1000, Matches > 3
+        const anchors = validPhotos.filter(p => p.matches > 3 && Math.abs(p.rating - 1000) < 150);
+        
+        // If we have anchors, pick one. If not, pick a random established photo.
+        let opponent = anchors.length > 0 
+            ? anchors[Math.floor(Math.random() * anchors.length)] 
+            : validPhotos.filter(p => p.id !== candidate.id)[Math.floor(Math.random() * (validPhotos.length - 1))];
+
+        if (!opponent) opponent = validPhotos.find(p => p.id !== candidate.id)!;
+        
+        photoA = candidate;
+        photoB = opponent;
+    } 
+    // 2. EXPLORATION PHASE (10% Chance)
+    // Pure random to prevent local optimization bubbles and ensure variety.
+    else if (r < 0.1) {
+        const idxA = Math.floor(Math.random() * validPhotos.length);
+        let idxB = Math.floor(Math.random() * validPhotos.length);
+        while (idxA === idxB) idxB = Math.floor(Math.random() * validPhotos.length);
+        
+        photoA = validPhotos[idxA];
+        photoB = validPhotos[idxB];
+    }
+    // 3. REFINEMENT PHASE (Quality Matchmaking) - The "Smart" Default
+    // Pick the photo we are MOST uncertain about.
+    // Pair it against the photo with the CLOSEST rating (50/50 win probability).
+    else {
+        // Sort by uncertainty descending (High sigma first)
+        const uncertainPhotos = [...validPhotos].sort((a, b) => b.uncertainty - a.uncertainty);
+        
+        // Add a little randomness to the top 5 most uncertain to avoid stuck loops
+        const topCandidates = uncertainPhotos.slice(0, 5);
+        photoA = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+
+        // Find the closest rating match
+        let bestMatch: RankedPhoto | null = null;
+        let minDiff = Infinity;
+
+        // Scan for closest rating
+        for (const p of validPhotos) {
+            if (p.id === photoA.id) continue;
+            const diff = Math.abs(p.rating - photoA.rating);
+            if (diff < minDiff) {
+                minDiff = diff;
+                bestMatch = p;
+            }
+        }
+
+        photoB = bestMatch || validPhotos.find(p => p.id !== photoA.id)!;
     }
 
-    setCurrentPair([a, b]);
+    // Randomize A/B positions so Left/Right bias doesn't affect specific photos
+    if (Math.random() > 0.5) {
+        setCurrentPair([photoA, photoB]);
+    } else {
+        setCurrentPair([photoB, photoA]);
+    }
+
   }, [photos]);
 
   useEffect(() => {
@@ -55,7 +108,7 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
 
   if (!currentPair) return (
     <div className="flex items-center justify-center h-full text-zinc-500 font-mono text-xs">
-        PREPARING MATCHUPS...
+        CALCULATING OPTIMAL MATCHUP...
     </div>
   );
 
@@ -88,7 +141,6 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
                     className="max-w-full max-h-full object-contain shadow-2xl transition-transform duration-500 group-hover:scale-[1.01]"
                     onError={(e) => {
                       (e.target as HTMLImageElement).style.display = 'none';
-                      // Consider showing a fallback placeholder or text here if needed
                     }}
                 />
             </div>
@@ -130,9 +182,9 @@ const BattleArena: React.FC<BattleArenaProps> = ({ photos, onVote, matchesCount 
       
       {/* Footer Meta */}
       <div className="border-t border-zinc-800 bg-[#09090b] px-6 py-2 flex justify-center space-x-8 text-[10px] text-zinc-600 font-mono uppercase shrink-0">
-         <span>ID: {photoA.id}</span>
+         <span title={`Uncertainty: ${Math.round(photoA.uncertainty)}`}>ID: {photoA.id} <span className="text-zinc-700 ml-1">({Math.round(photoA.rating)})</span></span>
          <span className="text-zinc-700">|</span>
-         <span>ID: {photoB.id}</span>
+         <span title={`Uncertainty: ${Math.round(photoB.uncertainty)}`}>ID: {photoB.id} <span className="text-zinc-700 ml-1">({Math.round(photoB.rating)})</span></span>
       </div>
     </div>
   );
