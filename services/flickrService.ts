@@ -3,6 +3,33 @@ import { Photo, Album } from '../types';
 const FLICKR_API_BASE = 'https://www.flickr.com/services/rest/';
 
 /**
+ * Helper function to fetch data, falling back to a CORS proxy if the direct request fails
+ * (common in pure frontend applications interacting with Flickr).
+ */
+const fetchWithFallback = async (url: string): Promise<Response> => {
+  try {
+    // Try direct request first
+    const response = await fetch(url);
+    // If we get a valid HTTP response, return it.
+    // Note: 403/401 from Flickr are still valid HTTP responses, fetch doesn't throw.
+    // fetch only throws on network failure (DNS, CORS, offline).
+    return response;
+  } catch (error) {
+    console.warn("Direct fetch failed (likely CORS). Retrying with proxy...", error);
+    try {
+        // Fallback: Use allorigins.win as a CORS proxy
+        // We use 'raw' to get the exact JSON response from Flickr
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+        const proxyResponse = await fetch(proxyUrl);
+        return proxyResponse;
+    } catch (proxyError) {
+        // If even the proxy fails, throw the original error to be helpful
+        throw error;
+    }
+  }
+};
+
+/**
  * Resolves a username to a Flickr NSID.
  */
 const resolveUserNsid = async (apiKey: string, username: string): Promise<string> => {
@@ -19,10 +46,11 @@ const resolveUserNsid = async (apiKey: string, username: string): Promise<string
   });
 
   try {
-    const response = await fetch(`${FLICKR_API_BASE}?${params.toString()}`);
+    const response = await fetchWithFallback(`${FLICKR_API_BASE}?${params.toString()}`);
     const data = await response.json();
 
     if (data.stat !== 'ok') {
+      // Fallback to lookupUser if findByUsername fails (sometimes simpler for vanity URLs)
       const urlParams = new URLSearchParams({
         method: 'flickr.urls.lookupUser',
         api_key: apiKey,
@@ -30,7 +58,7 @@ const resolveUserNsid = async (apiKey: string, username: string): Promise<string
         format: 'json',
         nojsoncallback: '1',
       });
-      const urlResponse = await fetch(`${FLICKR_API_BASE}?${urlParams.toString()}`);
+      const urlResponse = await fetchWithFallback(`${FLICKR_API_BASE}?${urlParams.toString()}`);
       const urlData = await urlResponse.json();
       
       if (urlData.stat === 'ok') {
@@ -59,7 +87,7 @@ export const getAlbums = async (apiKey: string, userId: string): Promise<Album[]
       nojsoncallback: '1',
     });
 
-    const response = await fetch(`${FLICKR_API_BASE}?${params.toString()}`);
+    const response = await fetchWithFallback(`${FLICKR_API_BASE}?${params.toString()}`);
     const data = await response.json();
 
     if (data.stat !== 'ok') {
@@ -113,7 +141,7 @@ export const fetchPhotos = async (apiKey: string, userId: string, albumId?: stri
             params.append('user_id', nsid);
         }
 
-        const response = await fetch(`${FLICKR_API_BASE}?${params.toString()}`);
+        const response = await fetchWithFallback(`${FLICKR_API_BASE}?${params.toString()}`);
         const data = await response.json();
 
         if (data.stat !== 'ok') {
@@ -125,7 +153,10 @@ export const fetchPhotos = async (apiKey: string, userId: string, albumId?: stri
         
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const pagePhotos = container.photo.map((p: any) => {
+             // Flickr photo URLs: try largest available first
              let url = p.url_k || p.url_h || p.url_l || p.url_o || p.url_m;
+             
+             // Fallback to constructing URL from parts if direct URL extras failed
              if (!url && p.server && p.id && p.secret) {
                 url = `https://live.staticflickr.com/${p.server}/${p.id}_${p.secret}_b.jpg`;
              }

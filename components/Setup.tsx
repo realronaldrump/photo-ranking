@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { FlickrConfig, Album } from '../types';
 import { getAlbums } from '../services/flickrService';
+import { storageService } from '../services/storageService';
 
 interface SetupProps {
-  onStart: (config: FlickrConfig | null, albumId?: string) => void;
+  onStart: (config: FlickrConfig | null, albumId?: string, title?: string) => void;
   isLoading: boolean;
   error: string | null;
 }
@@ -15,6 +16,9 @@ const Setup: React.FC<SetupProps> = ({ onStart, isLoading, error }) => {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [loadingAlbums, setLoadingAlbums] = useState(true);
   const [albumError, setAlbumError] = useState<string | null>(null);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const loadAlbums = async () => {
@@ -31,8 +35,45 @@ const Setup: React.FC<SetupProps> = ({ onStart, isLoading, error }) => {
     loadAlbums();
   }, []);
 
-  const handleSelectSource = (albumId?: string) => {
-    onStart({ apiKey: API_KEY, userId: USERNAME }, albumId);
+  const handleSelectSource = (albumId?: string, title?: string) => {
+    onStart({ apiKey: API_KEY, userId: USERNAME }, albumId, title);
+  };
+
+  const handleExport = () => {
+    // Export GLOBAL stream data by default for now, or we could add a UI to pick
+    const data = storageService.exportData(undefined); // undefined = global
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `portfolio_ranker_backup_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const json = event.target?.result as string;
+        const context = storageService.importData(json);
+        setImportStatus(`Successfully imported data for ${context ? 'Album' : 'Global Stream'}. Ready to rank.`);
+        
+        // Reset input
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      } catch (err) {
+        setImportStatus("Error importing file. Is it a valid backup?");
+      }
+    };
+    reader.readAsText(file);
   };
 
   return (
@@ -58,9 +99,9 @@ const Setup: React.FC<SetupProps> = ({ onStart, isLoading, error }) => {
             </div>
         )}
         
-        {albumError && (
-             <div className="mb-6 p-4 bg-orange-950/30 border border-orange-900/50 text-orange-400 text-xs font-mono text-center">
-              WARN: {albumError}
+        {importStatus && (
+             <div className="mb-6 p-4 bg-green-950/30 border border-green-900/50 text-green-400 text-xs font-mono text-center">
+              {importStatus}
             </div>
         )}
 
@@ -76,13 +117,25 @@ const Setup: React.FC<SetupProps> = ({ onStart, isLoading, error }) => {
             </div>
         ) : (
             <div className="space-y-4">
-                <div className="text-zinc-600 text-[10px] font-mono uppercase tracking-widest mb-4 border-b border-zinc-800 pb-2">
-                    Select Source for Ranking
+                <div className="text-zinc-600 text-[10px] font-mono uppercase tracking-widest mb-4 border-b border-zinc-800 pb-2 flex justify-between items-end">
+                    <span>Select Source for Ranking</span>
+                    <div className="flex space-x-3">
+                       <button onClick={handleExport} className="text-zinc-500 hover:text-white transition-colors cursor-pointer text-[10px]">EXPORT DATA</button>
+                       <span className="text-zinc-700">|</span>
+                       <button onClick={handleImportClick} className="text-zinc-500 hover:text-white transition-colors cursor-pointer text-[10px]">IMPORT DATA</button>
+                       <input 
+                         type="file" 
+                         ref={fileInputRef} 
+                         onChange={handleFileChange} 
+                         className="hidden" 
+                         accept=".json" 
+                       />
+                    </div>
                 </div>
                 
                 {/* Full Photostream Option */}
                 <button
-                    onClick={() => handleSelectSource(undefined)}
+                    onClick={() => handleSelectSource(undefined, 'Full Photostream')}
                     className="w-full flex items-center justify-between p-4 bg-zinc-900/50 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-600 transition-all group text-left"
                 >
                     <div>
@@ -101,7 +154,7 @@ const Setup: React.FC<SetupProps> = ({ onStart, isLoading, error }) => {
                     {albums.map((album) => (
                         <button
                             key={album.id}
-                            onClick={() => handleSelectSource(album.id)}
+                            onClick={() => handleSelectSource(album.id, album.title)}
                             className="flex flex-col p-4 bg-zinc-900/30 hover:bg-zinc-800 border border-zinc-800/50 hover:border-zinc-600 transition-all group text-left h-24 justify-between"
                         >
                             <div className="text-zinc-300 text-sm font-medium group-hover:text-white truncate w-full" title={album.title}>

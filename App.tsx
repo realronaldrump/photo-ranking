@@ -7,32 +7,34 @@ import Leaderboard from './components/Leaderboard';
 import { AppState, FlickrConfig, RankedPhoto, MatchResult, Photo } from './types';
 import { fetchPhotos, getDemoPhotos } from './services/flickrService';
 import { calculateRankings } from './services/rankingEngine';
+import { storageService } from './services/storageService';
 
 function App() {
   const [appState, setAppState] = useState<AppState>(AppState.SETUP);
   
-  // ARCHITECTURE UPDATE: Separated Source of Truth (rawPhotos) from Derived View (rankedPhotos)
+  // SESSION STATE
+  // We now track WHICH album we are ranking so we save to the correct bucket.
+  const [activeSessionId, setActiveSessionId] = useState<string | undefined>(undefined);
+  const [sessionTitle, setSessionTitle] = useState<string>('');
+
+  // DATA STATE
   const [rawPhotos, setRawPhotos] = useState<Photo[]>([]);
   const [rankedPhotos, setRankedPhotos] = useState<RankedPhoto[]>([]);
-  
-  const [matchHistory, setMatchHistory] = useState<MatchResult[]>(() => {
-    // Load history from local storage on initialization
-    const saved = localStorage.getItem('portfolio_ranker_history');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [matchHistory, setMatchHistory] = useState<MatchResult[]>([]);
   
   // Loading & Error states
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Persistence: Save history whenever it changes
+  // PERSISTENCE: Save to the SPECIFIC bucket for the active session
   useEffect(() => {
-    localStorage.setItem('portfolio_ranker_history', JSON.stringify(matchHistory));
-  }, [matchHistory]);
+    // Only save if we are actually in a session (Battle or Leaderboard)
+    if (appState !== AppState.SETUP) {
+      storageService.saveSession(activeSessionId, matchHistory);
+    }
+  }, [matchHistory, activeSessionId, appState]);
 
   // REACTIVE RANKING ENGINE
-  // Whenever history changes or we get new raw photos, re-calculate the rankings.
-  // This replaces the old circular logic and ensures one-way data flow.
   useEffect(() => {
     if (rawPhotos.length > 0) {
       const newRankings = calculateRankings(rawPhotos, matchHistory);
@@ -40,26 +42,33 @@ function App() {
     }
   }, [matchHistory, rawPhotos]);
 
-  const handleStart = async (config: FlickrConfig | null, albumId?: string) => {
+  const handleStart = async (config: FlickrConfig | null, albumId?: string, title?: string) => {
     setIsLoading(true);
     setError(null);
     try {
+      // 1. Set Session Context
+      setActiveSessionId(albumId);
+      setSessionTitle(title || (albumId ? 'Album' : 'Full Portfolio'));
+
+      // 2. Load History for THIS specific context
+      // This switches the "Brain" to the correct memory bank
+      const sessionHistory = storageService.loadSession(albumId);
+      setMatchHistory(sessionHistory);
+
+      // 3. Fetch Photos
       let fetchedPhotos: Photo[];
       if (config) {
-        // Fetch ALL photos (paginated) from the selected source
         fetchedPhotos = await fetchPhotos(config.apiKey, config.userId, albumId);
         
         if (fetchedPhotos.length < 2) {
            throw new Error("Found fewer than 2 photos in this source. Ranking requires at least 2 images.");
         }
       } else {
-        // Demo mode
         await new Promise(r => setTimeout(r, 1000));
         fetchedPhotos = getDemoPhotos();
       }
 
       setRawPhotos(fetchedPhotos);
-      // Note: The useEffect above will handle the initial ranking calculation
       setAppState(AppState.BATTLE);
     } catch (err) {
         if (err instanceof Error) {
@@ -78,13 +87,9 @@ function App() {
       loserId,
       timestamp: Date.now()
     };
-    
-    // Update history - this triggers the ranking useEffect
     setMatchHistory(prev => [...prev, newMatch]);
   };
 
-  // UNDO FUNCTIONALITY
-  // Removes the last vote from the history stack
   const handleUndo = () => {
     if (matchHistory.length > 0) {
       setMatchHistory(prev => prev.slice(0, -1));
@@ -117,6 +122,7 @@ function App() {
         currentState={appState} 
         onChangeState={setAppState} 
         canNavigate={appState !== AppState.SETUP}
+        sessionTitle={sessionTitle}
       >
         {renderContent()}
       </Layout>
